@@ -1,0 +1,287 @@
+/* app.js - main clicker logic (modular, careful with performance) */
+(() => {
+  const DOM = {
+    bigBtn: document.getElementById('bigBtn'),
+    displayCount: document.getElementById('displayCount'),
+    valueDisplay: document.getElementById('valueDisplay'),
+    totalClicks: document.getElementById('totalClicks'),
+    cpsDisplay: document.getElementById('cpsDisplay'),
+    cpsLabel: document.getElementById('cpsLabel'),
+    meterBar: document.getElementById('meterBar'),
+    upgrades: document.getElementById('upgrades'),
+    autoToggle: document.getElementById('autoToggle'),
+    doubleBtn: document.getElementById('doubleBtn'),
+    resetBtn: document.getElementById('resetBtn'),
+    themeToggle: document.getElementById('themeToggle'),
+    themeLabel: document.getElementById('themeLabel'),
+    soundToggle: document.getElementById('soundToggle'),
+    saveState: document.getElementById('saveState'),
+  };
+
+  const SAVE_KEY = 'darkclicker_v2';
+  const state = {
+    clicks: 0,
+    totalClicks: 0,
+    value: 1,
+    cps: 0,
+    auto: false,
+    multiplier: 1,
+    streak: 0,
+    upgrades: [
+      { id: 'multiplier', name: 'Click Multiplier', baseCost: 50, cps: 0, qty: 0 },
+      { id: 'autoSpeed', name: 'Autoclick Speed Adder', baseCost: 100, cps: 0, qty: 0 },
+    ],
+    sound: true,
+    theme: 'dark',
+    lastSave: Date.now()
+  };
+
+  // Setup BGM audio
+  const bgm = new Audio('assets/sounds/BGM.mp3');
+  bgm.loop = true;
+  bgm.volume = 0.15;
+
+  function playBgmOnUserInteraction() {
+    bgm.play().catch(() => {});
+    ['pointerdown', 'click', 'touchstart'].forEach(ev => {
+      window.removeEventListener(ev, playBgmOnUserInteraction);
+    });
+  }
+  ['pointerdown', 'click', 'touchstart'].forEach(ev => {
+    window.addEventListener(ev, playBgmOnUserInteraction, { once: true, passive: true });
+  });
+
+  // WebAudio context (resume on user interaction if needed)
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  let audioCtx = null;
+  function ensureAudioCtx() {
+    try {
+      if (!window._ctx) {
+        window._ctx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      return window._ctx;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function playClickSound() {
+    if (!state.sound) return;
+    
+    const clickSound = new Audio('assets/sounds/click.wav');
+    clickSound.volume = 0.5; // adjust loudness
+    clickSound.currentTime = 0; // allow rapid replay
+    clickSound.play().catch(() => {}); // ignore if user hasn't interacted yet
+  }
+
+  // persistence
+  function save() {
+    try {
+      state.lastSave = Date.now();
+      localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+      DOM.saveState.textContent = 'Saved';
+      DOM.saveState.style.opacity = 0.95;
+      clearTimeout(save._t);
+      save._t = setTimeout(() => DOM.saveState.style.opacity = 0.5, 800);
+    } catch (e) {
+      DOM.saveState.textContent = 'Error';
+    }
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return;
+      const s = JSON.parse(raw);
+      // merge for version-safety
+      Object.assign(state, s);
+    } catch (e) { console.warn('load', e); }
+  }
+  function resetState() {
+    if (!confirm('Reset all progress?')) return;
+    localStorage.removeItem(SAVE_KEY);
+    location.reload();
+  }
+
+  // rendering
+  function format(n) {
+    return Math.floor(n).toLocaleString();
+  }
+
+  function renderUpgrades() {
+    DOM.upgrades.innerHTML = '';
+    state.upgrades.forEach(u => {
+      const cost = Math.floor(u.baseCost * Math.pow(1.15, u.qty));
+      const el = document.createElement('div');
+      el.className = 'upgrade';
+      el.innerHTML = `
+        <div style="display:flex;flex-direction:column">
+          <strong>${u.name} <span style="font-weight:600;color:var(--muted);font-size:12px">x${u.qty}</span></strong>
+          <div class="small" style="color:var(--muted)">${u.id === 'autoSpeed' ? '+0.2 CPS each' : ''}</div>
+        </div>
+        <div style="display:flex;flex-direction:column;align-items:flex-end">
+          <div class="price">${cost.toLocaleString()}</div>
+          <button class="btn buy" data-id="${u.id}" style="margin-top:6px">Buy</button>
+        </div>
+      `;
+      DOM.upgrades.appendChild(el);
+    });
+
+    DOM.upgrades.querySelectorAll('.buy').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        buyUpgrade(btn.dataset.id);
+      });
+    });
+  }
+
+  function render() {
+    DOM.displayCount.textContent = format(state.clicks);
+    DOM.totalClicks.textContent = format(state.totalClicks);
+    DOM.valueDisplay.textContent = (state.value * state.multiplier).toFixed(2).replace(/\.00$/, '');
+    DOM.cpsDisplay.textContent = (state.cps).toFixed(2);
+    DOM.cpsLabel.textContent = `${(state.value * state.multiplier).toFixed(2)} / click`;
+    document.getElementById('streak').textContent = state.streak;
+    DOM.doubleBtn.textContent = `x2 (cost: ${Math.floor(50 * Math.pow(1.18, state.multiplier - 1))})`;
+    DOM.autoToggle.textContent = `Auto: ${state.auto ? 'On' : 'Off'}`;
+    DOM.soundToggle.textContent = state.sound ? 'Sound: On' : 'Sound: Off';
+
+    const pct = Math.min(100, (state.totalClicks % 100));
+    DOM.meterBar.style.width = pct + '%';
+
+    renderUpgrades();
+  }
+
+  // game actions
+  function doClick(n = 1) {
+    state.clicks += n * state.multiplier;
+    state.totalClicks += n * state.multiplier;
+    state.streak++;
+    playClickSound();
+    window.dispatchEvent(new CustomEvent('particle', { detail: { x: lastPointer.x, y: lastPointer.y } }));
+    flashButton();
+    render();
+    save();
+  }
+
+  function buyUpgrade(id) {
+    const up = state.upgrades.find(u => u.id === id);
+    if (!up) return;
+    const cost = Math.floor(up.baseCost * Math.pow(1.15, up.qty));
+    if (state.clicks < cost) {
+      DOM.bigBtn.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-8px)' }, { transform: 'translateX(8px)' }, { transform: 'translateX(0)' }], { duration: 260, easing: 'linear' });
+      return;
+    }
+    state.clicks -= cost;
+    up.qty++;
+
+    // Apply upgrade effects
+    if (id === 'multiplier') {
+      state.multiplier *= 2; // double click multiplier per upgrade
+    }
+    if (id === 'autoSpeed') {
+      state.cps += 0.2; // add to autoclick CPS speed
+    }
+
+    render();
+    save();
+  }
+
+  function toggleAuto() {
+    state.auto = !state.auto;
+    if (state.auto) startAuto(); else stopAuto();
+    render();
+    save();
+  }
+
+  let autoInterval = null;
+  function startAuto() {
+    if (autoInterval) clearInterval(autoInterval);
+    autoInterval = setInterval(() => {
+      const chunk = state.cps / 5;
+      state.clicks += chunk * state.multiplier;
+      state.totalClicks += chunk * state.multiplier;
+      render(); save();
+    }, 200);
+  }
+  function stopAuto() {
+    if (autoInterval) clearInterval(autoInterval);
+    autoInterval = null;
+  }
+
+  // UX helpers
+  function flashButton() {
+    DOM.bigBtn.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.04)' }, { transform: 'scale(1)' }], { duration: 220, easing: 'linear' });
+  }
+
+  // long-press support disabled as per request
+
+  // pointer events
+  DOM.bigBtn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    lastPointer.x = e.clientX || (e.touches && e.touches[0] && e.touches[0].clientX) || lastPointer.x;
+    lastPointer.y = e.clientY || (e.touches && e.touches[0] && e.touches[0].clientY) || lastPointer.y;
+    doClick(1);
+  }, { passive: false });
+  window.addEventListener('pointerup', (e) => { e && e.preventDefault(); }, { passive: false });
+  DOM.bigBtn.addEventListener('click', (e) => {
+    const rect = DOM.bigBtn.getBoundingClientRect();
+    const x = (e.clientX || rect.left + rect.width / 2);
+    const y = (e.clientY || rect.top + rect.height / 2);
+    window.dispatchEvent(new CustomEvent('particle', { detail: { x, y } }));
+  });
+
+  // keyboard
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); doClick(1); }
+    if (e.key === 'a') toggleAuto();
+  });
+
+  // theme
+  const root = document.documentElement;
+  function setTheme(t) {
+    if (t === 'light') root.setAttribute('data-theme', 'light');
+    else root.removeAttribute('data-theme');
+    DOM.themeLabel.textContent = t === 'light' ? 'Light' : 'Dark';
+    DOM.themeToggle.setAttribute('aria-checked', t === 'light');
+  }
+  DOM.themeToggle.addEventListener('click', () => {
+    const current = root.hasAttribute('data-theme') ? 'light' : 'dark';
+    const next = current === 'light' ? 'dark' : 'light';
+    state.theme = next;
+    setTheme(next);
+    save();
+  });
+  DOM.themeToggle.addEventListener('keydown', (e) => { if (e.key === 'Enter') DOM.themeToggle.click(); });
+
+  // small bindings
+  DOM.autoToggle.addEventListener('click', toggleAuto);
+  DOM.resetBtn.addEventListener('click', resetState);
+  DOM.doubleBtn.addEventListener('click', () => {
+    const cost = Math.floor(50 * Math.pow(1.18, state.multiplier - 1));
+    if (state.clicks < cost) return;
+    state.clicks -= cost;
+    state.multiplier *= 2;
+    render(); save();
+  });
+  DOM.soundToggle.addEventListener('click', () => { state.sound = !state.sound; render(); save(); });
+
+  // keep saving so users don't lose progress
+  setInterval(save, 5000);
+
+  // initial load
+  load();
+  if (state.auto) startAuto();
+  setTheme(state.theme || 'dark');
+  render();
+
+  // ensure audio context is resumed on first user gesture (mobile autoplay policy)
+  ['pointerdown', 'click', 'touchstart'].forEach(ev => {
+    window.addEventListener(ev, function resumeAudioOnce() {
+      const ctx = ensureAudioCtx();
+      if (ctx && ctx.state === 'suspended') ctx.resume();
+      window.removeEventListener(ev, resumeAudioOnce);
+    }, { passive: true });
+  });
+
+  // track last pointer position for particles
+  const lastPointer = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+})();
