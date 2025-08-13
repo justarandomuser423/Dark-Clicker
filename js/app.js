@@ -28,8 +28,8 @@
     multiplier: 1,
     streak: 0,
     upgrades: [
-      { id: 'multiplier', name: 'Click Multiplier', baseCost: 50, cps: 0, qty: 0 },
-      { id: 'autoSpeed', name: 'Autoclick Speed Adder', baseCost: 100, cps: 0, qty: 0 },
+      { id: 'multiplier', name: 'Click Multiplier', baseCost: 100, cps: 0, qty: 0 },
+      { id: 'autoSpeed', name: 'Autoclick Speed Adder', baseCost: 150, cps: 0, qty: 0 },
     ],
     sound: true,
     theme: 'dark',
